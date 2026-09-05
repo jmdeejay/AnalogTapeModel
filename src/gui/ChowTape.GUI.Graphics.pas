@@ -38,6 +38,19 @@ const
   { PresetsLNF fills the preset slot with the ComboBox background colour that
     the presets component leaves at juce::Colours::grey }
   clPresetBack      = $FF808080;
+  { The edge of the scope: the same red it sits on, taken darker. Like the
+    scope's own fill it is written as translucent black rather than a fixed
+    colour, so it darkens whatever is behind it and follows the background
+    gradient down the panel instead of cutting across it.
+
+    Note that it stacks: the border is stroked over the fill, so this 30% is
+    30% of the already-darkened fill, not of the red underneath. The two
+    together come to 44%, which is why a nominal 40% here read as far heavier
+    than the fill's 20%. The tooltip bar is left unframed: it is a resting
+    place for text rather than a display, and an outline made it look like a
+    second scope. }
+  clWellOutline     = $33000000;
+  clWellOutlineWidth = 1.0;
 
   { foleys gives every item a five-pixel margin, a five-pixel padding and a
     five-pixel corner radius unless gui.xml overrides them. Those defaults are
@@ -70,17 +83,20 @@ type
     function Bottom: Single; inline;
     function Reduced(Amount: Single): TRectF; overload; inline;
     function Reduced(DX, DY: Single): TRectF; overload; inline;
+    function Moved(DX, DY: Single): TRectF; inline;
     function WithHeight(NewH: Single): TRectF; inline;
     function WithY(NewY: Single): TRectF; inline;
     function Contains(PX, PY: Single): Boolean; inline;
   end;
 
 function RectF(X, Y, W, H: Single): TRectF; inline;
-{ Snaps a rectangle so that a one-pixel outline stroked on it lands on whole
-  pixels instead of being smeared across two rows at half intensity. A blurred
-  edge does not fall equally on the two sides of a fractional rectangle, which
-  is enough to make a box look a pixel off centre around its own label. }
-function SnapForStroke(const R: TRectF): TRectF;
+{ Snaps a rectangle so that an outline stroked on it lands on whole pixels
+  instead of being smeared across two rows at half intensity. A blurred edge
+  does not fall equally on the two sides of a fractional rectangle, which is
+  enough to make a box look a pixel off centre around its own label. An
+  odd-width stroke straddles the path, so it wants the half-pixel grid; an
+  even one wants whole pixels. }
+function SnapForStroke(const R: TRectF; Thickness: Single = 1.0): TRectF;
 
 { Loads the Roboto Condensed faces linked into the DLL so the UI matches the
   original's typography. Falls back to a condensed system face. }
@@ -101,6 +117,12 @@ procedure FillRoundedRectGradient(G: TGPGraphics; const R: TRectF; Radius: Singl
   ColourA, ColourB: Cardinal; Diagonal: Boolean = False);
 procedure StrokeRoundedRect(G: TGPGraphics; const R: TRectF; Radius, Thickness: Single;
   Colour: Cardinal);
+{ Confines what follows to a rounded rectangle. JUCE clips every component to
+  its own bounds; everything here shares one surface, so a shape drawn to the
+  edge of its box -- the scope's trace, whose halo is stroked several pixels
+  wider than the line itself -- spills over the panel it sits on without this.
+  Pair it with G.ResetClip. }
+procedure ClipToRoundedRect(G: TGPGraphics; const R: TRectF; Radius: Single);
 procedure FillRectC(G: TGPGraphics; const R: TRectF; Colour: Cardinal);
 
 procedure DrawTextC(G: TGPGraphics; const Text: string; const R: TRectF;
@@ -129,11 +151,40 @@ var
     exactly as it was before the glow existed. }
   GlowEnabled: Boolean = True;
 
-  { TEMPORARY -- paint cost, written by the editor at the end of every repaint
-    and drawn into the corner of the scope so it can be watched live. Delete
-    these two along with the read-out in TTapeScopeView.Paint. }
-  DebugPaintMs: Double = 0.0;        // last frame
-  DebugPaintMsAvg: Double = 0.0;     // smoothed
+const
+  { Draws the repaint breakdown over the scope:
+
+      avg 3.0 ms/frame  [last full repaint 22.0 = bg 3.8 + pan 16.0 + ui 2.2]
+
+    avg is the smoothed cost of every frame, which is what the plug-in
+    actually pays; the bracketed figures are the last full repaint, which only
+    happens when something changed.
+
+    On in a Debug build, off in a Release one -- the project defines DEBUG in
+    the one configuration and RELEASE in the other. Override it here to watch
+    the figures in a release build, which is the honest place to measure them,
+    since a debug build carries range and overflow checking. Grep
+    DebugShowPaintStats for both ends of this: the counters below, and the
+    read-out in TTapeScopeView.Paint. }
+{$IFDEF DEBUG}
+  DebugShowPaintStats = True;
+{$ELSE}
+  DebugShowPaintStats = False;
+{$ENDIF}
+
+var
+
+  { DEBUG -- paint cost, written by the editor at the end of every repaint.
+    Measured whether or not it is shown, so flipping DebugShowPaintStats above
+    is all it takes to see it. Smoothed except for DebugFullMs, since the raw
+    figures swing about with whatever else the machine is doing. }
+  DebugPaintMs: Double = 0.0;        // whole repaint
+  DebugBgMs: Double = 0.0;           // the background fills
+  DebugSetupMs: Double = 0.0;        // enabled states and the bar font sizing
+  DebugPanelsMs: Double = 0.0;       // the four tabbed panels and their contents
+  DebugScopeMs: Double = 0.0;        // the scope
+  DebugOtherMs: Double = 0.0;        // title, tooltip, bottom bar, grip
+  DebugFullMs: Double = 0.0;         // the last full repaint, unsmoothed
 
 { A polyline with a halo around it: GlowLayers widening, fading strokes, then
   the line itself at Thickness. Spread is how much wider each layer gets. }
@@ -147,6 +198,9 @@ procedure DrawPowerSymbol(G: TGPGraphics; const R: TRectF; Colour: Cardinal;
   Glow: Boolean = False);
 { The solid cog from cog-solid.svg: eight teeth around a disc with a hole. }
 procedure DrawCog(G: TGPGraphics; const R: TRectF; Colour: Cardinal);
+{ The dot the menus draw in place of a check mark: lit and haloed when the
+  thing it stands for is on, flat slate when it is off. }
+procedure DrawGlowDot(G: TGPGraphics; const R: TRectF; Lit: Boolean);
 
 function WithAlpha(Colour: Cardinal; Alpha: Single): Cardinal; inline;
 
@@ -188,12 +242,19 @@ begin
   Result.H := H;
 end;
 
-function SnapForStroke(const R: TRectF): TRectF;
+function SnapForStroke(const R: TRectF; Thickness: Single): TRectF;
+var
+  Half: Single;
 begin
-  Result.X := Round(R.X) + 0.5;
-  Result.Y := Round(R.Y) + 0.5;
-  Result.W := Round(R.X + R.W) - 0.5 - Result.X;
-  Result.H := Round(R.Y + R.H) - 0.5 - Result.Y;
+  if Odd(Round(Thickness)) then
+    Half := 0.5
+  else
+    Half := 0.0;
+
+  Result.X := Round(R.X) + Half;
+  Result.Y := Round(R.Y) + Half;
+  Result.W := Round(R.X + R.W) - Half - Result.X;
+  Result.H := Round(R.Y + R.H) - Half - Result.Y;
   if Result.W < 0.0 then
     Result.W := 0.0;
   if Result.H < 0.0 then
@@ -233,6 +294,14 @@ begin
   Result.H := H - 2 * DY;
   if Result.W < 0 then Result.W := 0;
   if Result.H < 0 then Result.H := 0;
+end;
+
+function TRectF.Moved(DX, DY: Single): TRectF;
+begin
+  Result.X := X + DX;
+  Result.Y := Y + DY;
+  Result.W := W;
+  Result.H := H;
 end;
 
 function TRectF.WithHeight(NewH: Single): TRectF;
@@ -501,6 +570,21 @@ begin
   end;
 end;
 
+procedure ClipToRoundedRect(G: TGPGraphics; const R: TRectF; Radius: Single);
+var
+  Path: TGPGraphicsPath;
+begin
+  if (R.W <= 0) or (R.H <= 0) then
+    Exit;
+  Path := TGPGraphicsPath.Create;
+  try
+    BuildRoundedPath(Path, R, Radius);
+    G.SetClip(Path);
+  finally
+    Path.Free;
+  end;
+end;
+
 { Just as much of juce::Colour as LookAndFeel_V3 needs. The channel arithmetic
   truncates rather than rounds, as JUCE's uint8 casts do. }
 
@@ -631,10 +715,13 @@ begin
   else
     Base := WithAlpha(Base, 0.5);
 
-  if Down then
-    Base := ColourContrasting(Base, 0.2)
-  else if Highlighted then
-    Base := ColourContrasting(Base, 0.1);
+  { LookAndFeel_V3 lightens the face when the mouse is over or down. A
+    disabled button does neither -- there is nothing behind it to press. }
+  if Enabled then
+    if Down then
+      Base := ColourContrasting(Base, 0.2)
+    else if Highlighted then
+      Base := ColourContrasting(Base, 0.1);
 
   { the outline is stroked on the path itself, so it costs a pixel of width
     and height and starts half a pixel in }
@@ -1029,6 +1116,46 @@ begin
   finally
     Brush.Free;
     Pen.Free;
+  end;
+end;
+
+procedure DrawGlowDot(G: TGPGraphics; const R: TRectF; Lit: Boolean);
+var
+  Brush: TGPSolidBrush;
+  S, CX, CY, Rad, Halo: Single;
+  Colour: Cardinal;
+  I: Integer;
+begin
+  S := Min(R.W, R.H);
+  if S < 4 then
+    Exit;
+
+  CX := R.X + R.W * 0.5;
+  CY := R.Y + R.H * 0.5;
+  Rad := S * 0.22;
+
+  if Lit then
+    Colour := clAccent
+  else
+    Colour := clSliderBack;
+
+  if Lit and GlowEnabled then
+    for I := GlowLayers downto 1 do
+    begin
+      Halo := Rad + I * S * 0.10;
+      Brush := TGPSolidBrush.Create(WithAlpha(Colour, GlowAlpha / (I * I)));
+      try
+        G.FillEllipse(Brush, CX - Halo, CY - Halo, Halo * 2, Halo * 2);
+      finally
+        Brush.Free;
+      end;
+    end;
+
+  Brush := TGPSolidBrush.Create(Colour);
+  try
+    G.FillEllipse(Brush, CX - Rad, CY - Rad, Rad * 2, Rad * 2);
+  finally
+    Brush.Free;
   end;
 end;
 

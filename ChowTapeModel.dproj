@@ -106,6 +106,7 @@
         <DCCReference Include="src\params\ChowTape.Presets.pas"/>
         <DCCReference Include="src\params\ChowTape.PresetLibrary.pas"/>
         <DCCReference Include="src\gui\ChowTape.GUI.Graphics.pas"/>
+        <DCCReference Include="src\gui\ChowTape.GUI.Menu.pas"/>
         <DCCReference Include="src\gui\ChowTape.GUI.Controls.pas"/>
         <DCCReference Include="src\gui\ChowTape.GUI.Editor.pas"/>
         <DCCReference Include="src\ChowTape.Processor.pas"/>

@@ -11,7 +11,7 @@ uses
   Winapi.Windows, System.SysUtils, System.Classes, System.Math,
   System.Generics.Collections,   // so TParameterSet's inline getters can expand
   ChowTape.VST2.Intf, ChowTape.Processor, ChowTape.Params, ChowTape.Presets,
-  ChowTape.PresetLibrary, ChowTape.GUI.Editor;
+  ChowTape.PresetLibrary, ChowTape.GUI.Editor, ChowTape.GUI.Menu;
 
 const
   ChowTapeUniqueID = $43684D64;  // 'ChMd'
@@ -33,12 +33,15 @@ type
     FBypassed: Boolean;
     FCurrentProgram: Integer;
     FChunk: TBytes;
+    { An editor whose close had to wait for a menu's modal loop to unwind. }
+    FEditorPendingFree: Boolean;
 
     procedure HandleLatencyChanged(Sender: TObject; LatencySamples: Integer);
     procedure HandleBeginGesture(Sender: TObject; Param: TParameter);
     procedure HandleParamEdit(Sender: TObject; Param: TParameter);
     procedure HandleEndGesture(Sender: TObject; Param: TParameter);
     procedure HandleEditorResized(Sender: TObject; W, H: Integer);
+    procedure ReleaseClosedEditor;
     procedure UpdateTimeInfo;
     procedure PrepareIfNeeded;
     function CallMaster(Opcode, Index: VstInt32; Value: VstIntPtr; Ptr: Pointer;
@@ -177,6 +180,8 @@ end;
 
 destructor TChowTapePlugin.Destroy;
 begin
+  { the backstop for a deferred close that no later opcode came to collect }
+  FEditorPendingFree := False;
   FreeAndNil(FEditor);
   FreeAndNil(FProcessor);
   inherited Destroy;
@@ -226,6 +231,18 @@ begin
   FPreparedRate := FSampleRate;
   FPreparedBlock := FBlockSize;
   FProcessor.PrepareToPlay(FSampleRate, FBlockSize, ChowTapeNumIO);
+end;
+
+{ Frees an editor whose close was deferred. Only ever called from the editor
+  opcodes, which the host runs on the message thread, and from the destructor
+  as a backstop in case none of them comes again. }
+procedure TChowTapePlugin.ReleaseClosedEditor;
+begin
+  if FEditorPendingFree and not MenuIsModal then
+  begin
+    FEditorPendingFree := False;
+    FreeAndNil(FEditor);
+  end;
 end;
 
 { The editor's corner grip has changed the window size. The host owns the
@@ -398,6 +415,7 @@ begin
 
     effEditGetRect:
       begin
+        ReleaseClosedEditor;
         { hosts ask for the rect before the editor exists, so the size the
           state remembers has to come from the processor }
         if FProcessor.EditorWidth > 0 then
@@ -411,6 +429,7 @@ begin
 
     effEditOpen:
       begin
+        ReleaseClosedEditor;
         if FEditor = nil then
         begin
           FEditor := TTapeEditor.Create(FProcessor);
@@ -425,13 +444,32 @@ begin
 
     effEditClose:
       begin
-        FreeAndNil(FEditor);
+        if FEditor <> nil then
+        begin
+          { A menu's modal loop pumps messages from inside the editor's own
+            window procedure, so the host can get here while that frame is
+            still live -- freeing the editor now would destroy the very object
+            whose method is going to resume when the loop unwinds. The window
+            goes straight away, so the host has what it asked for; the object
+            itself is released once the stack is clear. }
+          if MenuIsModal then
+          begin
+            FEditor.BeginClose;
+            DismissMenus;
+            FEditorPendingFree := True;
+          end
+          else
+            FreeAndNil(FEditor);
+        end;
         Result := 1;
       end;
 
     effEditIdle:
-      if FEditor <> nil then
-        FEditor.Idle;
+      begin
+        ReleaseClosedEditor;
+        if FEditor <> nil then
+          FEditor.Idle;
+      end;
 
     effGetChunk:
       begin

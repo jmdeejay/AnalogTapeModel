@@ -43,6 +43,7 @@ uses
   ChowTape.Presets in 'src\params\ChowTape.Presets.pas',
   ChowTape.PresetLibrary in 'src\params\ChowTape.PresetLibrary.pas',
   ChowTape.GUI.Graphics in 'src\gui\ChowTape.GUI.Graphics.pas',
+  ChowTape.GUI.Menu in 'src\gui\ChowTape.GUI.Menu.pas',
   ChowTape.GUI.Controls in 'src\gui\ChowTape.GUI.Controls.pas',
   ChowTape.GUI.Editor in 'src\gui\ChowTape.GUI.Editor.pas',
   ChowTape.Processor in 'src\ChowTape.Processor.pas';

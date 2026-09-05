@@ -14,7 +14,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, Winapi.GDIPAPI, Winapi.GDIPOBJ,
   System.SysUtils, System.Classes, System.Math, System.Generics.Collections,
-  ChowTape.GUI.Graphics, ChowTape.GUI.Controls, ChowTape.Params,
+  ChowTape.GUI.Graphics, ChowTape.GUI.Controls, ChowTape.GUI.Menu, ChowTape.Params,
   ChowTape.Processor, ChowTape.Presets, ChowTape.PresetLibrary,
   ChowTape.DSP.Types;
 
@@ -47,6 +47,19 @@ type
     FBackBitmap: HBITMAP;
     FBackDC: HDC;
     FBackW, FBackH: Integer;
+
+    { Everything but the scope and the wow/flutter lights is the same from one
+      frame to the next, and redrawing it costs the best part of twenty
+      milliseconds. It is drawn into FStaticDC when something actually changes;
+      between changes only the animated rectangles are blitted back out of it
+      and redrawn. }
+    FStaticBitmap: HBITMAP;
+    FStaticDC: HDC;
+    FStaticValid: Boolean;
+    FDirty: Boolean;
+    FParamSnapshot: TArray<Single>;
+    FFramesSinceFull: Integer;
+    FClosing: Boolean;
 
     FControls: TControlList;          // top-level controls (owned)
     FPanels: TList<TTapeTabbedPanel>; // references into FControls
@@ -85,6 +98,10 @@ type
     procedure SaveSettings;
     procedure SetEditorSize(W, H: Integer);
     procedure PaintTo(DC: HDC);
+    procedure PaintStaticTo(DC: HDC);
+    procedure PaintAnimatedTo(DC: HDC);
+    procedure RestoreAnimatedRegions;
+    function ParametersChanged: Boolean;
     procedure EnsureBackBuffer(W, H: Integer);
     function ControlAt(X, Y: Single): TTapeControl;
     procedure UpdateEnabledStates;
@@ -116,12 +133,16 @@ type
     procedure EndGesture(P: TParameter);
     function HostWindow: HWND;
     function ScaleFactor: Single;
+    function IsClosing: Boolean;
   public
     constructor Create(AProcessor: TChowTapeProcessor);
     destructor Destroy; override;
 
     function Open(AParent: HWND): Boolean;
     procedure Close;
+    { Tears the window down but leaves the object standing, for when the host
+      asks to close while a menu's modal loop is still on the stack. }
+    procedure BeginClose;
     procedure Idle;
 
     function WndProc(Msg: UINT; WP: WPARAM; LP: LPARAM): LRESULT;
@@ -358,7 +379,18 @@ end;
 
 procedure TTapeEditor.RequestRepaint;
 begin
-  if FHwnd <> 0 then
+  { Every control calls this when its own state changes, so it is also the
+    place to note that the static snapshot no longer matches.
+
+    It deliberately does not invalidate: the timer does that, once per tick.
+    WM_PAINT is only delivered when the queue is otherwise empty, so asking
+    here would let a fast drag -- which delivers mouse moves far faster than
+    thirty a second -- queue up full repaints as fast as they can be drawn.
+    Waiting for the tick caps them at the rate the display needs, at the cost
+    of at most one frame of latency. Hosts that drive the editor through
+    effEditIdle instead of our timer still need the direct route. }
+  FDirty := True;
+  if (FHwnd <> 0) and not FTimerActive then
     InvalidateRect(FHwnd, nil, False);
 end;
 
@@ -393,6 +425,11 @@ end;
 
 function TTapeEditor.Open(AParent: HWND): Boolean;
 begin
+  { normally a no-op on a fresh editor, but an editor whose close was deferred
+    past a menu could still be holding its controls }
+  Close;
+  FClosing := False;
+
   StartGdiPlus;
   InitTapeFonts;
   RegisterEditorClass;
@@ -419,8 +456,17 @@ begin
   Result := True;
 end;
 
-procedure TTapeEditor.Close;
+function TTapeEditor.IsClosing: Boolean;
 begin
+  Result := FClosing;
+end;
+
+{ Everything but the controls: the host gets its window back straight away,
+  while anything still on the stack keeps the objects it is holding. }
+procedure TTapeEditor.BeginClose;
+begin
+  FClosing := True;
+
   if FHwnd <> 0 then
   begin
     if FTimerActive then
@@ -434,6 +480,14 @@ begin
     Dec(GEditorCount);
   end;
 
+  FCaptured := nil;
+  FHovered := nil;
+end;
+
+procedure TTapeEditor.Close;
+begin
+  BeginClose;
+
   FControls.Clear;
   FPanels.Clear;
   FTooltipBar := nil;
@@ -441,8 +495,10 @@ begin
   FPrevPresetBtn := nil;
   FNextPresetBtn := nil;
   FOversamplingCombo := nil;
-  FCaptured := nil;
-  FHovered := nil;
+  FModeCombo := nil;
+  FMixGroupCombo := nil;
+  FBarBackground := nil;
+  FResizeGrip := nil;
 
   if FBackDC <> 0 then
   begin
@@ -454,6 +510,17 @@ begin
     DeleteObject(FBackBitmap);
     FBackBitmap := 0;
   end;
+  if FStaticDC <> 0 then
+  begin
+    DeleteDC(FStaticDC);
+    FStaticDC := 0;
+  end;
+  if FStaticBitmap <> 0 then
+  begin
+    DeleteObject(FStaticBitmap);
+    FStaticBitmap := 0;
+  end;
+  FStaticValid := False;
 end;
 
 procedure TTapeEditor.Idle;
@@ -840,6 +907,7 @@ begin
   FMixGroupCombo.FontOverride := Size;
 end;
 
+
 function TTapeEditor.SettingsFilePath: string;
 begin
   Result := TPath.Combine(TPath.Combine(TPath.GetHomePath, 'ChowdhuryDSP'),
@@ -895,7 +963,7 @@ begin
   DoLayout;
 
   if FHwnd <> 0 then
-    InvalidateRect(FHwnd, nil, False);
+    RequestRepaint;
 end;
 
 procedure TTapeEditor.DoLayout;
@@ -910,7 +978,7 @@ var
   SpeedRow: TArray<TRectF>;
   DegradeTop: TArray<TRectF>;
   PresetRow: TArray<TRectF>;
-  M, Pad, TabBtn: Single;
+  M, Pad, TabBtn, Nudge: Single;
 begin
   if FControls.Count = 0 then
     Exit;
@@ -920,6 +988,9 @@ begin
   M := FoleysMargin * FScale;
   Pad := FoleysPadding * FScale;
   TabBtn := 50 * FScale;    // Types gives TextButton and ComboBox max-height 50
+  { the preset block sits a little left of where the bar's proportions put it,
+    to open the gap between it and the cog }
+  Nudge := 4 * FScale;
   { the power buttons are min-height="20" max-height="30" in gui.xml and land
     on the maximum there; pinning them to it keeps the glyph the size it was
     drawn for instead of letting the flex starve it down to the minimum }
@@ -1102,7 +1173,7 @@ begin
     FC(0.3), FC(1.95), FC(0.06, 25 * FScale, 40 * FScale)]);
 
   // the preset slot is shared by the two step arrows and the name in between
-  PresetRow := Flex(Sub[6].Reduced(M), False,
+  PresetRow := Flex(Sub[6].Reduced(M).Moved(-Nudge, 0), False,
     [FC(0.0, 16 * FScale, 22 * FScale), FC(1.0), FC(0.0, 16 * FScale, 22 * FScale)]);
 
   Idx := FBottomBarIndex;
@@ -1113,7 +1184,7 @@ begin
   FControls[Idx + 4].Bounds := PresetRow[0];                 // previous preset
   FControls[Idx + 5].Bounds := PresetRow[1];                 // preset name
   FControls[Idx + 6].Bounds := PresetRow[2];                 // next preset
-  FControls[Idx + 7].Bounds := Sub[7];                       // settings
+  FControls[Idx + 7].Bounds := Sub[7].Moved(-Nudge, 0);      // settings
 
   { juce::AudioProcessorEditor puts the corner grip in the bottom right of the
     whole editor, outside the root's margin }
@@ -1195,28 +1266,61 @@ begin
     DeleteObject(FBackBitmap);
     FBackBitmap := 0;
   end;
+  if FStaticDC <> 0 then
+  begin
+    DeleteDC(FStaticDC);
+    FStaticDC := 0;
+  end;
+  if FStaticBitmap <> 0 then
+  begin
+    DeleteObject(FStaticBitmap);
+    FStaticBitmap := 0;
+  end;
 
   DC := GetDC(FHwnd);
   try
     FBackBitmap := CreateCompatibleBitmap(DC, W, H);
     FBackDC := CreateCompatibleDC(DC);
     SelectObject(FBackDC, FBackBitmap);
+
+    FStaticBitmap := CreateCompatibleBitmap(DC, W, H);
+    FStaticDC := CreateCompatibleDC(DC);
+    SelectObject(FStaticDC, FStaticBitmap);
   finally
     ReleaseDC(FHwnd, DC);
   end;
 
   FBackW := W;
   FBackH := H;
+  FStaticValid := False;
+  FDirty := True;
 end;
 
-procedure TTapeEditor.PaintTo(DC: HDC);
+{ The slow pass: the background, the four panels and everything else that only
+  changes when the user or the host changes something. }
+procedure TTapeEditor.PaintStaticTo(DC: HDC);
 var
   G: TGPGraphics;
   I: Integer;
-  T0, T1, Freq: Int64;
+  Freq, T0, TBg, TSetup, TA, TB, TEnd: Int64;
+  Panels, Scope, Other: Double;
+
+  { DEBUG -- see DebugShowPaintStats in ChowTape.GUI.Graphics }
+  function Ms(From, Till: Int64): Double;
+  begin
+    if Freq > 0 then
+      Result := 1000.0 * (Till - From) / Freq
+    else
+      Result := 0.0;
+  end;
+
 begin
   QueryPerformanceFrequency(Freq);
   QueryPerformanceCounter(T0);
+
+  Panels := 0.0;
+  Scope := 0.0;
+  Other := 0.0;
 
   G := TGPGraphics.Create(DC);
   try
@@ -1231,6 +1335,7 @@ begin
     FillRectC(G, RectF(0, 0, FWidth, FHeight), clBlack);
     FillRoundedRectGradient(G, RectF(0, 0, FWidth, FHeight).Reduced(FoleysMargin * FScale),
       PanelRadius, clTapeBackTop, clTapeBackBottom, True);
+    QueryPerformanceCounter(TBg);
 
     { a section's controls grey out with its power button, and the change can
       come from the host as easily as from the editor, so it is settled here
@@ -1239,22 +1344,135 @@ begin
 
     { needs a Graphics to measure with, so it cannot be settled in DoLayout }
     SyncBarFontSize(G);
+    QueryPerformanceCounter(TSetup);
 
     for I := 0 to FControls.Count - 1 do
-      FControls[I].Paint(G);
+    begin
+      QueryPerformanceCounter(TA);
+      FControls[I].PaintStatic(G);
+      QueryPerformanceCounter(TB);
+
+      { DEBUG -- bucket the cost by what drew it }
+      if FControls[I] is TTapeTabbedPanel then
+        Panels := Panels + Ms(TA, TB)
+      else if FControls[I] is TTapeScopeView then
+        Scope := Scope + Ms(TA, TB)
+      else
+        Other := Other + Ms(TA, TB);
+    end;
   finally
     G.Free;
   end;
 
-  { TEMPORARY -- both the last frame and a running average, since the raw
-    figure swings about with whatever else the machine is doing. Drawn in the
-    corner of the scope; delete this block with the read-out there. }
+  { DEBUG -- the breakdown holds its last full-pass values, so it says what a
+    full repaint costs rather than what the steady state costs }
+  QueryPerformanceCounter(TEnd);
+  DebugBgMs := Ms(T0, TBg);
+  DebugSetupMs := Ms(TBg, TSetup);
+  DebugPanelsMs := Panels;
+  DebugScopeMs := Scope;
+  DebugOtherMs := Other;
+  DebugFullMs := Ms(T0, TEnd);
+end;
+
+{ The fast pass: the scope and whichever wow/flutter light is on show. }
+procedure TTapeEditor.PaintAnimatedTo(DC: HDC);
+var
+  G: TGPGraphics;
+  I: Integer;
+begin
+  G := TGPGraphics.Create(DC);
+  try
+    G.SetSmoothingMode(SmoothingModeAntiAlias);
+    G.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+    G.SetPixelOffsetMode(PixelOffsetModeHalf);
+
+    for I := 0 to FControls.Count - 1 do
+      FControls[I].PaintAnimated(G);
+  finally
+    G.Free;
+  end;
+end;
+
+{ Blits the parts of the snapshot the animated controls are about to draw over
+  back into the working buffer. The rectangles are grown by a few pixels: a
+  glow is stroked with a pen wider than the shape, so it reaches outside the
+  control's own bounds. }
+procedure TTapeEditor.RestoreAnimatedRegions;
+const
+  Bleed = 10;
+var
+  Rects: TArray<TRectF>;
+  I, L, T, W, H: Integer;
+begin
+  if (FStaticDC = 0) or (FBackDC = 0) then
+    Exit;
+
+  SetLength(Rects, 0);
+  for I := 0 to FControls.Count - 1 do
+    FControls[I].CollectAnimatedBounds(Rects);
+
+  for I := 0 to High(Rects) do
+  begin
+    L := Trunc(Rects[I].X) - Bleed;
+    T := Trunc(Rects[I].Y) - Bleed;
+    W := Ceil(Rects[I].W) + 2 * Bleed;
+    H := Ceil(Rects[I].H) + 2 * Bleed;
+    if L < 0 then begin Inc(W, L); L := 0; end;
+    if T < 0 then begin Inc(H, T); T := 0; end;
+    if L + W > FBackW then W := FBackW - L;
+    if T + H > FBackH then H := FBackH - T;
+    if (W > 0) and (H > 0) then
+      BitBlt(FBackDC, L, T, W, H, FStaticDC, L, T, SRCCOPY);
+  end;
+end;
+
+{ Host automation and mix-group peers move parameters without the editor
+  hearing about it, so rather than trying to hook every path the values are
+  simply compared against what was last drawn. Forty-odd floats a frame. }
+function TTapeEditor.ParametersChanged: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  if Length(FParamSnapshot) <> FProcessor.Params.Count then
+  begin
+    SetLength(FParamSnapshot, FProcessor.Params.Count);
+    Result := True;
+  end;
+
+  for I := 0 to FProcessor.Params.Count - 1 do
+    if FParamSnapshot[I] <> FProcessor.Params[I].Normalised then
+    begin
+      FParamSnapshot[I] := FProcessor.Params[I].Normalised;
+      Result := True;
+    end;
+end;
+
+procedure TTapeEditor.PaintTo(DC: HDC);
+var
+  Freq, T0, T1: Int64;
+begin
+  QueryPerformanceFrequency(Freq);
+  QueryPerformanceCounter(T0);
+
+  if FDirty or not FStaticValid then
+  begin
+    PaintStaticTo(DC);
+    BitBlt(FStaticDC, 0, 0, FWidth, FHeight, DC, 0, 0, SRCCOPY);
+    FStaticValid := True;
+    FDirty := False;
+    FFramesSinceFull := 0;
+  end
+  else
+    RestoreAnimatedRegions;
+
+  PaintAnimatedTo(DC);
+
+  { DEBUG -- shown by TTapeScopeView.Paint when DebugShowPaintStats is on }
   QueryPerformanceCounter(T1);
   if Freq > 0 then
-  begin
-    DebugPaintMs := 1000.0 * (T1 - T0) / Freq;
-    DebugPaintMsAvg := DebugPaintMsAvg * 0.9 + DebugPaintMs * 0.1;
-  end;
+    DebugPaintMs := DebugPaintMs * 0.9 + (1000.0 * (T1 - T0) / Freq) * 0.1;
 end;
 
 { ---------------------------------------------------------------------------
@@ -1314,13 +1532,44 @@ begin
     WM_ERASEBKGND:
       Exit(1);
 
+    { the owner-drawn menus are measured and painted through the window that
+      opened them, which is this one }
+    WM_MEASUREITEM:
+      if TTapeMenu.MeasureItem(LP) then
+      begin
+        Result := 1;
+        Exit;
+      end;
+
+    WM_DRAWITEM:
+      if TTapeMenu.DrawItem(LP) then
+      begin
+        Result := 1;
+        Exit;
+      end;
+
     WM_TIMER:
       begin
         if FOversamplingCombo <> nil then
           FOversamplingCombo.DisplayText :=
             FProcessor.Params.ByID(pidOSFactor).GetText;
         if FPresetsCombo <> nil then
+        begin
+          if FPresetsCombo.DisplayText <> FProcessor.Presets.DisplayName then
+            FDirty := True;
           FPresetsCombo.DisplayText := FProcessor.Presets.DisplayName;
+        end;
+
+        { anything the editor did not do itself }
+        if ParametersChanged then
+          FDirty := True;
+
+        { and a backstop, in case something changes state without saying so:
+          a stale snapshot then lasts a second rather than for ever }
+        Inc(FFramesSinceFull);
+        if FFramesSinceFull >= 30 then
+          FDirty := True;
+
         InvalidateRect(FHwnd, nil, False);
         Exit;
       end;
@@ -1340,7 +1589,7 @@ begin
           end;
           C.MouseDown(X, Y, Msg = WM_RBUTTONDOWN);
         end;
-        InvalidateRect(FHwnd, nil, False);
+        RequestRepaint;
         Exit;
       end;
 
@@ -1351,7 +1600,7 @@ begin
         C := ControlAt(X, Y);
         if C <> nil then
           C.MouseDoubleClick(X, Y);
-        InvalidateRect(FHwnd, nil, False);
+        RequestRepaint;
         Exit;
       end;
 
@@ -1371,12 +1620,14 @@ begin
             FHovered := C;
             if C <> nil then
             begin
-              C.Hovered := True;
+              { a disabled control still explains itself in the tooltip bar,
+                but it must not light up: nothing there responds to a click }
+              C.Hovered := C.Enabled;
               SetTooltip(C.Name, C.Tooltip);
             end
             else
               SetTooltip('', '');
-            InvalidateRect(FHwnd, nil, False);
+            RequestRepaint;
           end;
         end;
         Exit;
@@ -1392,7 +1643,7 @@ begin
           FCaptured := nil;
           ReleaseCapture;
         end;
-        InvalidateRect(FHwnd, nil, False);
+        RequestRepaint;
         Exit;
       end;
 
@@ -1410,7 +1661,7 @@ begin
         C := ControlAt(Pt.X, Pt.Y);
         if C <> nil then
           C.MouseWheel(SmallInt(HIWORD(WP)));
-        InvalidateRect(FHwnd, nil, False);
+        RequestRepaint;
         Exit;
       end;
   end;
@@ -1476,32 +1727,35 @@ procedure TTapeEditor.ShowSyncMenu(IsFlutter: Boolean);
   end;
 
 var
-  Menu: HMENU;
+  Menu: TTapeMenu;
   Cmd: Integer;
   Pt: TPoint;
   SpeedIps, MotorFreq, NewRate: Single;
 begin
-  Menu := CreatePopupMenu;
+  Menu := TTapeMenu.Create;
   try
-    AppendMenu(Menu, MF_STRING, 1, 'Sync to tape speed');
+    Menu.AddItem('Sync to tape speed', 1);
     if IsFlutter then
     begin
-      AppendMenu(Menu, MF_STRING, 2, 'Sync to eighth note');
-      AppendMenu(Menu, MF_STRING, 3, 'Sync to quarter note');
-      AppendMenu(Menu, MF_STRING, 4, 'Sync to half note');
-      AppendMenu(Menu, MF_STRING, 5, 'Sync to whole note');
+      Menu.AddItem('Sync to eighth note', 2);
+      Menu.AddItem('Sync to quarter note', 3);
+      Menu.AddItem('Sync to half note', 4);
+      Menu.AddItem('Sync to whole note', 5);
     end
     else
     begin
-      AppendMenu(Menu, MF_STRING, 2, 'Sync to one bar');
-      AppendMenu(Menu, MF_STRING, 3, 'Sync to two bars');
-      AppendMenu(Menu, MF_STRING, 4, 'Sync to four bars');
-      AppendMenu(Menu, MF_STRING, 5, 'Sync to eight bars');
+      Menu.AddItem('Sync to one bar', 2);
+      Menu.AddItem('Sync to two bars', 3);
+      Menu.AddItem('Sync to four bars', 4);
+      Menu.AddItem('Sync to eight bars', 5);
     end;
 
     GetCursorPos(Pt);
-    Cmd := Integer(TrackPopupMenu(Menu, TPM_LEFTALIGN or TPM_TOPALIGN or
-      TPM_RETURNCMD or TPM_NONOTIFY, Pt.X, Pt.Y, 0, FHwnd, nil));
+    Cmd := Menu.Popup(FHwnd, Pt.X, Pt.Y);
+
+    { the host may have torn the editor down while the menu was up }
+    if FClosing then
+      Exit;
 
     case Cmd of
       1:
@@ -1520,49 +1774,40 @@ begin
       5: if IsFlutter then SyncToRhythm(1.0) else SyncToRhythm(8.0);
     end;
   finally
-    DestroyMenu(Menu);
+    Menu.Free;
   end;
 end;
 
 procedure TTapeEditor.ShowOversamplingMenu;
 var
-  Menu: HMENU;
+  Menu: TTapeMenu;
   Cmd, I: Integer;
   Pt: TPoint;
   FactorParam, ModeParam: TParameter;
-  Flags: Cardinal;
 begin
   FactorParam := FProcessor.Params.ByID(pidOSFactor);
   ModeParam := FProcessor.Params.ByID(pidOSMode);
 
-  Menu := CreatePopupMenu;
+  Menu := TTapeMenu.Create;
   try
     for I := 0 to High(FactorParam.Choices) do
-    begin
-      Flags := MF_STRING;
-      if I = FactorParam.GetIndex then
-        Flags := Flags or MF_CHECKED;
-      AppendMenu(Menu, Flags, 100 + I, PChar(FactorParam.Choices[I]));
-    end;
+      Menu.AddItem(FactorParam.Choices[I], 100 + I, I = FactorParam.GetIndex);
 
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
+    Menu.AddSeparator;
 
     for I := 0 to High(ModeParam.Choices) do
-    begin
-      Flags := MF_STRING;
-      if I = ModeParam.GetIndex then
-        Flags := Flags or MF_CHECKED;
-      AppendMenu(Menu, Flags, 200 + I, PChar(ModeParam.Choices[I]));
-    end;
+      Menu.AddItem(ModeParam.Choices[I], 200 + I, I = ModeParam.GetIndex);
 
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    AppendMenu(Menu, MF_STRING or MF_GRAYED, 300,
-      PChar(Format('Latency: %.2f ms',
-        [FProcessor.Hysteresis.OSManager.GetLatencyMilliseconds])));
+    Menu.AddSeparator;
+    Menu.AddItem(Format('Latency: %.2f ms',
+      [FProcessor.Hysteresis.OSManager.GetLatencyMilliseconds]), 300, False, False);
 
     GetCursorPos(Pt);
-    Cmd := Integer(TrackPopupMenu(Menu, TPM_LEFTALIGN or TPM_TOPALIGN or
-      TPM_RETURNCMD or TPM_NONOTIFY, Pt.X, Pt.Y, 0, FHwnd, nil));
+    Cmd := Menu.Popup(FHwnd, Pt.X, Pt.Y);
+
+    { the host may have torn the editor down while the menu was up }
+    if FClosing then
+      Exit;
 
     if (Cmd >= 100) and (Cmd < 200) then
     begin
@@ -1581,7 +1826,7 @@ begin
 
     RequestRepaint;
   finally
-    DestroyMenu(Menu);
+    Menu.Free;
   end;
 end;
 
@@ -1622,47 +1867,50 @@ const
   CmdGoToFolder   = 9005;
   CmdChooseFolder = 9006;
 var
-  Menu, FactoryMenu, UserMenu, Sub: HMENU;
+  Menu, FactoryMenu, UserMenu: TTapeMenu;
   FactoryCats, UserCats: TStringList;
-  FactorySubs, UserSubs: TList<HMENU>;
+  FactorySubs, UserSubs: TList<TTapeMenu>;
   Library_: TPresetLibrary;
   Entry: TPresetEntry;
   I, Cmd: Integer;
   Pt: TPoint;
-  Flags: Cardinal;
-  HasUser: Boolean;
+  HasUser, CanEdit: Boolean;
 
-  procedure AddEntry(var Cats: TStringList; var Subs: TList<HMENU>;
-    const Category, Name: string; Index: Integer; Ticked: Boolean);
+  { Presets are grouped by the category their file gives them; a preset with no
+    category goes in a submenu named after the bank it came from. }
+  procedure AddEntry(Cats: TStringList;
+    Subs: TList<TTapeMenu>; const Category, Name: string;
+    Index: Integer; Ticked: Boolean);
   var
     Idx: Integer;
-    F: Cardinal;
   begin
     Idx := Cats.IndexOf(Category);
     if Idx < 0 then
     begin
       Cats.Add(Category);
-      Subs.Add(CreatePopupMenu);
+      { the submenu is attached later, once its caption is known }
+      Subs.Add(TTapeMenu.Create);
       Idx := Cats.Count - 1;
     end;
-    F := MF_STRING;
-    if Ticked then
-      F := F or MF_CHECKED;
-    AppendMenu(Subs[Idx], F, Index + 1, PChar(Name));
+    Subs[Idx].AddItem(Name, Index + 1, Ticked);
   end;
 
-  procedure AttachCategories(Target: HMENU; Cats: TStringList;
-    Subs: TList<HMENU>; const FlatLabel: string);
+  procedure AttachCategories(Target: TTapeMenu; Cats: TStringList;
+    Subs: TList<TTapeMenu>; const FlatLabel: string);
   var
     J: Integer;
+    Caption: string;
+    Child: TTapeMenu;
   begin
     for J := 0 to Cats.Count - 1 do
     begin
-      Sub := Subs[J];
       if Cats[J] = '' then
-        AppendMenu(Target, MF_POPUP, Sub, PChar(FlatLabel))
+        Caption := FlatLabel
       else
-        AppendMenu(Target, MF_POPUP, Sub, PChar(Cats[J]));
+        Caption := Cats[J];
+
+      Child := Target.AddSubMenu(Caption);
+      Subs[J].MoveItemsTo(Child);
     end;
   end;
 
@@ -1670,12 +1918,11 @@ begin
   Library_ := FProcessor.Presets;
   Library_.Refresh;
 
-  Menu := CreatePopupMenu;
-  FactoryMenu := CreatePopupMenu;
+  Menu := TTapeMenu.Create;
   FactoryCats := TStringList.Create;
   UserCats := TStringList.Create;
-  FactorySubs := TList<HMENU>.Create;
-  UserSubs := TList<HMENU>.Create;
+  FactorySubs := TObjectList<TTapeMenu>.Create(True);
+  UserSubs := TObjectList<TTapeMenu>.Create(True);
   try
     HasUser := False;
     for I := 0 to Library_.Count - 1 do
@@ -1692,39 +1939,37 @@ begin
       end;
     end;
 
+    FactoryMenu := Menu.AddSubMenu('Factory');
     AttachCategories(FactoryMenu, FactoryCats, FactorySubs, 'Factory');
-    AppendMenu(Menu, MF_POPUP, FactoryMenu, 'Factory');
 
-    // built only when there is something to attach it to: an unattached popup
-    // would not be freed by DestroyMenu(Menu) at the end
     if HasUser then
     begin
-      UserMenu := CreatePopupMenu;
+      UserMenu := Menu.AddSubMenu('User');
       AttachCategories(UserMenu, UserCats, UserSubs, 'User');
-      AppendMenu(Menu, MF_POPUP, UserMenu, 'User');
     end
     else
-      AppendMenu(Menu, MF_STRING or MF_GRAYED, 0, 'User (none saved yet)');
+      Menu.AddItem('User (none saved yet)', 0, False, False);
 
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    AppendMenu(Menu, MF_STRING, CmdSaveAs, 'Save Preset As...');
+    Menu.AddSeparator;
+    Menu.AddItem('Save Preset As...', CmdSaveAs);
 
     // Resave and Delete only make sense for a preset backed by a file
-    Flags := MF_STRING;
-    if not Library_.CurrentIsUserPreset then
-      Flags := Flags or MF_GRAYED;
-    AppendMenu(Menu, Flags, CmdResave, 'Resave Preset');
-    AppendMenu(Menu, Flags, CmdDelete, 'Delete Preset');
+    CanEdit := Library_.CurrentIsUserPreset;
+    Menu.AddItem('Resave Preset', CmdResave, False, CanEdit);
+    Menu.AddItem('Delete Preset', CmdDelete, False, CanEdit);
 
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    AppendMenu(Menu, MF_STRING, CmdGoToFolder, 'Go to Preset Folder...');
-    AppendMenu(Menu, MF_STRING, CmdChooseFolder, 'Choose Preset Folder...');
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    AppendMenu(Menu, MF_STRING, CmdResetDefault, 'Reset to Default');
+    Menu.AddSeparator;
+    Menu.AddItem('Go to Preset Folder...', CmdGoToFolder);
+    Menu.AddItem('Choose Preset Folder...', CmdChooseFolder);
+    Menu.AddSeparator;
+    Menu.AddItem('Reset to Default', CmdResetDefault);
 
     GetCursorPos(Pt);
-    Cmd := Integer(TrackPopupMenu(Menu, TPM_LEFTALIGN or TPM_TOPALIGN or
-      TPM_RETURNCMD or TPM_NONOTIFY, Pt.X, Pt.Y, 0, FHwnd, nil));
+    Cmd := Menu.Popup(FHwnd, Pt.X, Pt.Y);
+
+    { the host may have torn the editor down while the menu was up }
+    if FClosing then
+      Exit;
 
     if (Cmd >= 1) and (Cmd <= Library_.Count) then
     begin
@@ -1754,7 +1999,7 @@ begin
     FactorySubs.Free;
     UserCats.Free;
     FactoryCats.Free;
-    DestroyMenu(Menu);   // frees the attached submenus too
+    Menu.Free;
   end;
 end;
 
@@ -1864,45 +2109,45 @@ end;
 
 procedure TTapeEditor.ShowSettingsMenu;
 var
-  Menu: HMENU;
+  Menu: TTapeMenu;
   Cmd, I: Integer;
   Pt: TPoint;
 begin
-  Menu := CreatePopupMenu;
+  Menu := TTapeMenu.Create;
   try
-    AppendMenu(Menu, MF_STRING, 1, 'Reset All Parameters');
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    AppendMenu(Menu, MF_STRING or MF_GRAYED, 2,
-      PChar(Format('Latency: %d samples', [FProcessor.LatencySamples])));
-    AppendMenu(Menu, MF_STRING or MF_GRAYED, 3,
-      PChar(Format('Sample rate: %.0f Hz', [FProcessor.SampleRate])));
+    { the two things the menu actually does, before the read-outs }
+    Menu.AddItem('Reset All Parameters', 1);
+    { the dot in the check column stands for the glow itself }
+    Menu.AddItem('Glow', 10, GlowEnabled);
+    Menu.AddSeparator;
+    Menu.AddItem(Format('Latency: %d samples', [FProcessor.LatencySamples]),
+      2, False, False);
+    Menu.AddItem(Format('Sample rate: %.0f Hz', [FProcessor.SampleRate]),
+      3, False, False);
 
     // Resource status. Both are linked into the DLL now, but each can still be
     // overridden by loose files, so report what is actually in use.
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    AppendMenu(Menu, MF_STRING or MF_GRAYED, 6,
-      PChar('Font: ' + TapeFontFamily + ' (' + TapeFontSource + ')'));
+    Menu.AddSeparator;
+    Menu.AddItem('Font: ' + TapeFontFamily + ' (' + TapeFontSource + ')',
+      6, False, False);
 
     if STNModelsAvailable then
-      AppendMenu(Menu, MF_STRING or MF_GRAYED, 7,
-        PChar(Format('STN models: %d/%d (%s)',
-          [STNModelsLoadedCount, STNModelTotal, STNModelsSource])))
+      Menu.AddItem(Format('STN models: %d/%d (%s)',
+        [STNModelsLoadedCount, STNModelTotal, STNModelsSource]), 7, False, False)
     else
-      AppendMenu(Menu, MF_STRING or MF_GRAYED, 7,
-        PChar('STN models: NOT FOUND - STN mode falls back to RK4'));
+      Menu.AddItem('STN models: NOT FOUND - STN mode falls back to RK4',
+        7, False, False);
 
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    if GlowEnabled then
-      AppendMenu(Menu, MF_STRING or MF_CHECKED, 10, 'Glow')
-    else
-      AppendMenu(Menu, MF_STRING, 10, 'Glow');
-    AppendMenu(Menu, MF_SEPARATOR, 0, nil);
-    AppendMenu(Menu, MF_STRING or MF_GRAYED, 4,
-      'Chow Tape Model - Delphi VST 2.4 port - by JM-DG');
+    Menu.AddSeparator;
+    Menu.AddItem('Chow Tape Model - Delphi VST 2.4 port - by JM-DG',
+      4, False, False);
 
     GetCursorPos(Pt);
-    Cmd := Integer(TrackPopupMenu(Menu, TPM_LEFTALIGN or TPM_TOPALIGN or
-      TPM_RETURNCMD or TPM_NONOTIFY, Pt.X, Pt.Y, 0, FHwnd, nil));
+    Cmd := Menu.Popup(FHwnd, Pt.X, Pt.Y);
+
+    { the host may have torn the editor down while the menu was up }
+    if FClosing then
+      Exit;
 
     if Cmd = 1 then
     begin
@@ -1919,7 +2164,7 @@ begin
       RequestRepaint;
     end;
   finally
-    DestroyMenu(Menu);
+    Menu.Free;
   end;
 end;
 

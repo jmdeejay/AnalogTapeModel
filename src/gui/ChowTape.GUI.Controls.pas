@@ -13,7 +13,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, Winapi.GDIPAPI, Winapi.GDIPOBJ,
   System.SysUtils, System.Classes, System.Math, System.Generics.Collections,
-  ChowTape.GUI.Graphics, ChowTape.Params, ChowTape.DSP.Types,
+  ChowTape.GUI.Graphics, ChowTape.GUI.Menu, ChowTape.Params, ChowTape.DSP.Types,
   ChowTape.DSP.Scope;
 
 type
@@ -28,6 +28,10 @@ type
     procedure EndGesture(P: TParameter);
     function HostWindow: HWND;
     function ScaleFactor: Single;
+    { True once the host has asked for the editor to close. A menu's modal loop
+      can be running while that happens, so anything that resumes after a popup
+      has to check before touching the editor again. }
+    function IsClosing: Boolean;
   end;
 
   TTapeControl = class
@@ -45,6 +49,16 @@ type
 
     constructor Create(AHost: ITapeEditorHost);
     procedure Paint(G: TGPGraphics); virtual;
+
+    { The editor keeps a snapshot of everything that does not move and blits it
+      back each frame, so only these are redrawn between changes. }
+    function IsAnimated: Boolean; virtual;
+    procedure PaintStatic(G: TGPGraphics); virtual;
+    procedure PaintAnimated(G: TGPGraphics); virtual;
+    { Appends the bounds of everything this control animates, so the editor
+      knows which parts of the snapshot to restore. }
+    procedure CollectAnimatedBounds(var List: TArray<TRectF>); virtual;
+
     function HitTest(X, Y: Single): Boolean; virtual;
     { Controls that open a popup must not grab the mouse: the menu's modal loop
       swallows the button-up that would otherwise release it. }
@@ -195,7 +209,12 @@ type
     FCurrentPage: Integer;
     FTabHeight: Single;
     function TabRect(Index: Integer): TRectF;
+    procedure PaintChrome(G: TGPGraphics);
+    function VisiblePage: TTapeTabPage;
   public
+    procedure PaintStatic(G: TGPGraphics); override;
+    procedure PaintAnimated(G: TGPGraphics); override;
+    procedure CollectAnimatedBounds(var List: TArray<TRectF>); override;
     constructor Create(AHost: ITapeEditorHost);
     destructor Destroy; override;
     function AddPage(const ACaption: string): TTapeTabPage;
@@ -215,6 +234,7 @@ type
     FTrace: TFloatArray;
   public
     constructor Create(AHost: ITapeEditorHost; AScope: TTapeScope);
+    function IsAnimated: Boolean; override;
     procedure Paint(G: TGPGraphics); override;
   end;
 
@@ -223,6 +243,7 @@ type
     FGetValue: TFunc<Single>;
   public
     constructor Create(AHost: ITapeEditorHost; AGetValue: TFunc<Single>);
+    function IsAnimated: Boolean; override;
     procedure Paint(G: TGPGraphics); override;
   end;
 
@@ -354,6 +375,32 @@ end;
 
 procedure TTapeControl.MouseDown(X, Y: Single; RightButton: Boolean);
 begin
+end;
+
+function TTapeControl.IsAnimated: Boolean;
+begin
+  Result := False;
+end;
+
+procedure TTapeControl.PaintStatic(G: TGPGraphics);
+begin
+  if not IsAnimated then
+    Paint(G);
+end;
+
+procedure TTapeControl.PaintAnimated(G: TGPGraphics);
+begin
+  if IsAnimated then
+    Paint(G);
+end;
+
+procedure TTapeControl.CollectAnimatedBounds(var List: TArray<TRectF>);
+begin
+  if IsAnimated and Visible then
+  begin
+    SetLength(List, Length(List) + 1);
+    List[High(List)] := Bounds;
+  end;
 end;
 
 procedure TTapeControl.MouseDrag(X, Y: Single);
@@ -903,12 +950,11 @@ end;
 
 procedure TTapeComboBox.ShowMenu;
 var
-  Menu: HMENU;
+  Menu: TTapeMenu;
   I, Cmd, Selected: Integer;
   Pt: TPoint;
-  Flags: Cardinal;
 begin
-  Menu := CreatePopupMenu;
+  Menu := TTapeMenu.Create;
   try
     if FParam <> nil then
       Selected := FParam.GetIndex
@@ -916,22 +962,20 @@ begin
       Selected := -1;
 
     for I := 0 to FItems.Count - 1 do
-    begin
-      Flags := MF_STRING;
-      if I = Selected then
-        Flags := Flags or MF_CHECKED;
       if FItems[I] = '-' then
-        AppendMenu(Menu, MF_SEPARATOR, 0, nil)
+        Menu.AddSeparator
       else
-        AppendMenu(Menu, Flags, I + 1, PChar(FItems[I]));
-    end;
+        Menu.AddItem(FItems[I], I + 1, I = Selected);
 
     Pt.X := Round(Bounds.X);
     Pt.Y := Round(Bounds.Bottom);
     Winapi.Windows.ClientToScreen(FHost.HostWindow, Pt);
 
-    Cmd := Integer(TrackPopupMenu(Menu, TPM_LEFTALIGN or TPM_TOPALIGN or
-      TPM_RETURNCMD or TPM_NONOTIFY, Pt.X, Pt.Y, 0, FHost.HostWindow, nil));
+    Cmd := Menu.Popup(FHost.HostWindow, Pt.X, Pt.Y);
+
+    { the host may have torn the editor down while the menu was up }
+    if FHost.IsClosing then
+      Exit;
 
     if Cmd > 0 then
     begin
@@ -947,7 +991,7 @@ begin
       FHost.RequestRepaint;
     end;
   finally
-    DestroyMenu(Menu);
+    Menu.Free;
   end;
 end;
 
@@ -1014,12 +1058,11 @@ begin
   Result := RectF(Bounds.X + Index * W, Bounds.Y, W, FTabHeight);
 end;
 
-procedure TTapeTabbedPanel.Paint(G: TGPGraphics);
+procedure TTapeTabbedPanel.PaintChrome(G: TGPGraphics);
 var
-  I, J: Integer;
+  I: Integer;
   R, Shadow: TRectF;
   Colour: Cardinal;
-  Page: TTapeTabPage;
 begin
   if not Visible then
     Exit;
@@ -1050,13 +1093,64 @@ begin
     DrawTextC(G, FPages[I].Caption, RectF(R.X, R.Y + 4.0, R.W, R.H - 4.0),
       (FTabHeight - 4.0) * 0.45, Colour, True, 1, 1);
   end;
+end;
 
-  if (FCurrentPage >= 0) and (FCurrentPage < FPages.Count) then
-  begin
-    Page := FPages[FCurrentPage];
-    for J := 0 to Page.Controls.Count - 1 do
-      Page.Controls[J].Paint(G);
-  end;
+function TTapeTabbedPanel.VisiblePage: TTapeTabPage;
+begin
+  if Visible and (FCurrentPage >= 0) and (FCurrentPage < FPages.Count) then
+    Result := FPages[FCurrentPage]
+  else
+    Result := nil;
+end;
+
+procedure TTapeTabbedPanel.Paint(G: TGPGraphics);
+var
+  Page: TTapeTabPage;
+  J: Integer;
+begin
+  PaintChrome(G);
+  Page := VisiblePage;
+  if Page = nil then
+    Exit;
+  for J := 0 to Page.Controls.Count - 1 do
+    Page.Controls[J].Paint(G);
+end;
+
+procedure TTapeTabbedPanel.PaintStatic(G: TGPGraphics);
+var
+  Page: TTapeTabPage;
+  J: Integer;
+begin
+  PaintChrome(G);
+  Page := VisiblePage;
+  if Page = nil then
+    Exit;
+  for J := 0 to Page.Controls.Count - 1 do
+    Page.Controls[J].PaintStatic(G);
+end;
+
+procedure TTapeTabbedPanel.PaintAnimated(G: TGPGraphics);
+var
+  Page: TTapeTabPage;
+  J: Integer;
+begin
+  Page := VisiblePage;
+  if Page = nil then
+    Exit;
+  for J := 0 to Page.Controls.Count - 1 do
+    Page.Controls[J].PaintAnimated(G);
+end;
+
+procedure TTapeTabbedPanel.CollectAnimatedBounds(var List: TArray<TRectF>);
+var
+  Page: TTapeTabPage;
+  J: Integer;
+begin
+  Page := VisiblePage;
+  if Page = nil then
+    Exit;
+  for J := 0 to Page.Controls.Count - 1 do
+    Page.Controls[J].CollectAnimatedBounds(List);
 end;
 
 procedure TTapeTabbedPanel.MouseDown(X, Y: Single; RightButton: Boolean);
@@ -1097,7 +1191,16 @@ begin
   FScope := AScope;
 end;
 
+function TTapeScopeView.IsAnimated: Boolean;
+begin
+  Result := True;
+end;
+
 procedure TTapeScopeView.Paint(G: TGPGraphics);
+const
+  { xPad in TapeScope, widened from the three pixels it was so the read-outs
+    clear the rounded corners and the border rather than sitting against them }
+  LabelInset = 7.0;
 var
   R: TRectF;
   N, NumPoints: Integer;
@@ -1111,6 +1214,8 @@ begin
 
   R := Bounds;
   FillRoundedRect(G, R, PanelRadius, clScopeBack);
+  StrokeRoundedRect(G, SnapForStroke(R, clWellOutlineWidth), PanelRadius,
+    clWellOutlineWidth, clWellOutline);
 
   NumPoints := Max(16, Round(R.W));
   FScope.GetTrace(FTrace, NumPoints);
@@ -1125,7 +1230,17 @@ begin
     Pts[N].Y := MidY - EnsureRange(FTrace[N], -1.0, 1.0) * HalfH * 0.9;
   end;
 
-  DrawGlowPolyline(G, PGPPointF(@Pts[0]), NumPoints, clAccent, 1.5, 2.5);
+  { the trace runs the full width of the panel and its halo is stroked wider
+    than the line, so it is kept inside the border rather than the background:
+    clipping to the background alone still lets it draw over the border, which
+    is stroked on that same edge }
+  ClipToRoundedRect(G, R.Reduced(clWellOutlineWidth),
+    JMaxF(0.0, PanelRadius - clWellOutlineWidth));
+  try
+    DrawGlowPolyline(G, PGPPointF(@Pts[0]), NumPoints, clAccent, 1.5, 2.5);
+  finally
+    G.ResetClip;
+  end;
 
   InLabel := Format('IN: %.1f dB', [FScope.GetInputDb]);
   OutLabel := Format('OUT: %.1f dB', [FScope.GetOutputDb]);
@@ -1136,16 +1251,21 @@ begin
     scaled with the rest of the GUI. }
   LabelBand := RectF(R.X, R.Y + R.H * 0.06, R.W, R.H * 0.2);
 
-  DrawTextC(G, InLabel, RectF(LabelBand.X + 3, LabelBand.Y, R.W * 0.5, LabelBand.H),
+  DrawTextC(G, InLabel,
+    RectF(LabelBand.X + LabelInset, LabelBand.Y, R.W * 0.5, LabelBand.H),
     R.H * 0.18, clWhite, False, 0, 1);
-  DrawTextC(G, OutLabel, RectF(R.CentreX, LabelBand.Y, R.W * 0.5 - 3, LabelBand.H),
+  DrawTextC(G, OutLabel,
+    RectF(R.CentreX, LabelBand.Y, R.W * 0.5 - LabelInset, LabelBand.H),
     R.H * 0.18, clWhite, False, 2, 1);
 
-  { TEMPORARY -- what the last repaint cost, live in the corner. Delete this
-    with DebugPaintMs in ChowTape.GUI.Graphics. }
-  DrawTextC(G, Format('paint %.1f ms  (avg %.1f)', [DebugPaintMs, DebugPaintMsAvg]),
-    RectF(R.X + 4, R.Bottom - R.H * 0.22, R.W - 8, R.H * 0.2),
-    R.H * 0.15, $99FFFFFF, False, 0, 1);
+  { DEBUG -- where the last repaint went, live in the corner. Off by default;
+    the switch is DebugShowPaintStats in ChowTape.GUI.Graphics. }
+  if DebugShowPaintStats then
+    DrawTextC(G, Format('avg %.1f ms/frame     [last full repaint %.1f = bg %.1f + pan %.1f + ui %.1f]',
+        [DebugPaintMs, DebugFullMs, DebugBgMs, DebugPanelsMs,
+         DebugSetupMs + DebugScopeMs + DebugOtherMs]),
+      RectF(R.X + 4, R.Bottom - R.H * 0.22, R.W - 8, R.H * 0.2),
+      R.H * 0.14, $99FFFFFF, False, 0, 1);
 end;
 
 { TTapeLightMeter }
@@ -1154,6 +1274,11 @@ constructor TTapeLightMeter.Create(AHost: ITapeEditorHost; AGetValue: TFunc<Sing
 begin
   inherited Create(AHost);
   FGetValue := AGetValue;
+end;
+
+function TTapeLightMeter.IsAnimated: Boolean;
+begin
+  Result := True;
 end;
 
 procedure TTapeLightMeter.Paint(G: TGPGraphics);
