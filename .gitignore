@@ -1,0 +1,58 @@
+# ===========================================================================
+#  Delphi build output
+# ===========================================================================
+bin/
+dcu/
+*.dcu
+*.map
+*.drc
+*.rsm
+
+# ===========================================================================
+# Project
+# ===========================================================================
+
+deploy-to-multimedia-player.bat
+
+# IDE state (per-developer, not part of the project)
+__history/
+__recovery/
+*.identcache
+*.local
+*.stat
+*.tvsconfig
+*.skincfg
+*.~*
+*.dsk
+
+# Note: ChowTapeModel.res is deliberately NOT ignored. The .dpr references it
+# with {$R *.res}, so a clean checkout needs it in order to build.
+
+# ===========================================================================
+#  Deployment
+# ===========================================================================
+*.zip
+
+# ===========================================================================
+#  LaTeX artifacts from Manual/ and Paper/
+# ===========================================================================
+*.aux
+*.bbl
+*.blg
+*.synctex*
+*.out
+*.log
+*.toc
+*.fls
+*.fdb_latexmk
+
+# ===========================================================================
+#  Editors and operating systems
+# ===========================================================================
+.vscode/
+.idea/
+[Tt]humbs.db
+.DS_Store
+*.DS_Store
+*.swp
+*~

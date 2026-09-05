@@ -1,0 +1,12 @@
+// Resources linked into the DLL, so the plug-in is a single self-contained
+// file with nothing to deploy alongside it.
+//
+// Compiled by brcc32 automatically: the .dpr carries
+//     {$R 'ChowTapeResources.res' 'ChowTapeResources.rc'}
+//
+// stn_models.bin is generated from resources\STN_Models\*.json by
+// tools\gen_stn_models.py -- regenerate it if the networks ever change.
+
+STN_MODELS      RCDATA "resources\\stn_models.bin"
+ROBOTO_REGULAR  RCDATA "resources\\RobotoCondensed-Regular.ttf"
+ROBOTO_BOLD     RCDATA "resources\\RobotoCondensed-Bold.ttf"

@@ -1,0 +1,142 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{4A4E2F71-9F1D-4F4B-9E42-7C2A2C4B1A10}</ProjectGuid>
+        <ProjectVersion>20.1</ProjectVersion>
+        <FrameworkType>None</FrameworkType>
+        <MainSource>ChowTapeModel.dpr</MainSource>
+        <Base>True</Base>
+        <Config Condition="'$(Config)'==''">Release</Config>
+        <Platform Condition="'$(Platform)'==''">Win64</Platform>
+        <TargetedPlatforms>3</TargetedPlatforms>
+        <AppType>Library</AppType>
+        <ProjectName Condition="'$(ProjectName)'==''">ChowTapeModel</ProjectName>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
+        <Base>true</Base>
+    </PropertyGroup>
+    <PropertyGroup Condition="('$(Platform)'=='Win32' and '$(Base)'=='true') or '$(Base_Win32)'!=''">
+        <Base_Win32>true</Base_Win32>
+        <CfgParent>Base</CfgParent>
+        <Base>true</Base>
+    </PropertyGroup>
+    <PropertyGroup Condition="('$(Platform)'=='Win64' and '$(Base)'=='true') or '$(Base_Win64)'!=''">
+        <Base_Win64>true</Base_Win64>
+        <CfgParent>Base</CfgParent>
+        <Base>true</Base>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Config)'=='Debug' or '$(Cfg_1)'!=''">
+        <Cfg_1>true</Cfg_1>
+        <CfgParent>Base</CfgParent>
+        <Base>true</Base>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Config)'=='Release' or '$(Cfg_2)'!=''">
+        <Cfg_2>true</Cfg_2>
+        <CfgParent>Base</CfgParent>
+        <Base>true</Base>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Base)'!=''">
+        <DCC_DependencyCheckOutputName>ChowTapeModel.dll</DCC_DependencyCheckOutputName>
+        <DCC_UnitSearchPath>src;src\vst;src\dsp;src\params;src\gui;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_ExeOutput>.\bin\$(Platform)\$(Config)</DCC_ExeOutput>
+        <DCC_DcuOutput>.\dcu\$(Platform)\$(Config)</DCC_DcuOutput>
+        <DCC_Define>RELEASE;$(DCC_Define)</DCC_Define>
+        <DCC_E>false</DCC_E>
+        <DCC_F>false</DCC_F>
+        <DCC_K>false</DCC_K>
+        <DCC_N>false</DCC_N>
+        <DCC_S>false</DCC_S>
+        <DCC_Optimize>true</DCC_Optimize>
+        <DCC_SymbolReferenceInfo>0</DCC_SymbolReferenceInfo>
+        <DCC_Namespace>System;Winapi;System.Win;$(DCC_Namespace)</DCC_Namespace>
+        <VerInfo_Locale>1033</VerInfo_Locale>
+        <VerInfo_Keys>CompanyName=;FileDescription=CHOW Tape Model (Delphi VST 2.4);FileVersion=1.0.0.0;InternalName=ChowTapeModel;LegalCopyright=GPLv3;OriginalFilename=ChowTapeModel.dll;ProductName=CHOW Tape Model;ProductVersion=1.0.0.0</VerInfo_Keys>
+        <GenDll>true</GenDll>
+        <SanitizedProjectName>ChowTapeModel</SanitizedProjectName>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Base_Win32)'!=''">
+        <DCC_Namespace>Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;$(DCC_Namespace)</DCC_Namespace>
+        <BT_BuildType>Debug</BT_BuildType>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Base_Win64)'!=''">
+        <DCC_Namespace>Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;$(DCC_Namespace)</DCC_Namespace>
+        <BT_BuildType>Debug</BT_BuildType>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Cfg_1)'!=''">
+        <DCC_Define>DEBUG;$(DCC_Define)</DCC_Define>
+        <DCC_Optimize>false</DCC_Optimize>
+        <DCC_GenerateStackFrames>true</DCC_GenerateStackFrames>
+        <DCC_DebugInfoInExe>true</DCC_DebugInfoInExe>
+        <DCC_RemoteDebug>true</DCC_RemoteDebug>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Cfg_2)'!=''">
+        <DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols>
+        <DCC_SymbolReferenceInfo>0</DCC_SymbolReferenceInfo>
+        <DCC_DebugInformation>0</DCC_DebugInformation>
+    </PropertyGroup>
+    <ItemGroup>
+        <DelphiCompile Include="$(MainSource)">
+            <MainSource>MainSource</MainSource>
+        </DelphiCompile>
+        <RcCompile Include="ChowTapeResources.rc">
+            <Form>ChowTapeResources.res</Form>
+        </RcCompile>
+        <DCCReference Include="src\vst\ChowTape.VST2.Intf.pas"/>
+        <DCCReference Include="src\vst\ChowTape.VST2.Plugin.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Types.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.FastMath.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Filters.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.DelayLine.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Oversampling.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.VariableOS.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Utils.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Basics.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.HysteresisSTN.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Hysteresis.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.HysteresisProcessor.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.ToneControl.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Compression.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.InputFilters.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.MidSide.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Chew.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Degrade.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Loss.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.WowFlutter.pas"/>
+        <DCCReference Include="src\dsp\ChowTape.DSP.Scope.pas"/>
+        <DCCReference Include="src\params\ChowTape.Params.pas"/>
+        <DCCReference Include="src\params\ChowTape.Presets.pas"/>
+        <DCCReference Include="src\params\ChowTape.PresetLibrary.pas"/>
+        <DCCReference Include="src\gui\ChowTape.GUI.Graphics.pas"/>
+        <DCCReference Include="src\gui\ChowTape.GUI.Controls.pas"/>
+        <DCCReference Include="src\gui\ChowTape.GUI.Editor.pas"/>
+        <DCCReference Include="src\ChowTape.Processor.pas"/>
+        <BuildConfiguration Include="Base">
+            <Key>Base</Key>
+        </BuildConfiguration>
+        <BuildConfiguration Include="Debug">
+            <Key>Cfg_1</Key>
+            <CfgParent>Base</CfgParent>
+        </BuildConfiguration>
+        <BuildConfiguration Include="Release">
+            <Key>Cfg_2</Key>
+            <CfgParent>Base</CfgParent>
+        </BuildConfiguration>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Delphi.Personality.12</Borland.Personality>
+        <Borland.ProjectType>Library</Borland.ProjectType>
+        <BorlandProject>
+            <Delphi.Personality>
+                <Source>
+                    <Source Name="MainSource">ChowTapeModel.dpr</Source>
+                </Source>
+            </Delphi.Personality>
+            <Platforms>
+                <Platform value="Win32">True</Platform>
+                <Platform value="Win64">True</Platform>
+            </Platforms>
+        </BorlandProject>
+        <ProjectFileVersion>12</ProjectFileVersion>
+    </ProjectExtensions>
+    <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
+    <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
+</Project>
