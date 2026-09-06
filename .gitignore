@@ -14,6 +14,9 @@ dcu/
 
 deploy-to-multimedia-player.bat
 
+# make-release.bat drops its archives here
+release/
+
 # IDE state (per-developer, not part of the project)
 __history/
 __recovery/

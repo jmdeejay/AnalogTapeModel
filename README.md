@@ -1,10 +1,22 @@
 # CHOW Tape Model — Delphi VST 2.4 port
 
-A Delphi port of Jatin Chowdhury's [AnalogTapeModel](https://github.com/jatinchowdhury18/AnalogTapeModel),
-which is written in C++ on top of JUCE. This project reimplements the whole
-plug-in — DSP, parameters, factory presets and editor — in Object Pascal with no
-external dependencies beyond the Delphi RTL, the Win32 API and GDI+, and exposes
-it as a VST 2.4 DLL.
+CHOW Tape Model is a physical model of an analog tape machine, originally based
+on the Sony TC-260 and able to emulate a wide range of reel-to-reel machines.
+The model is described in a
+[paper](http://dafx2019.bcu.ac.uk/papers/DAFx2019_paper_3.pdf) presented at the
+2019 DAFx conference, and the work began as a class project for
+[Music 420](https://ccrma.stanford.edu/courses/420/) at Stanford University
+(CCRMA). The model, the plug-in built on it and its design are all Jatin
+Chowdhury's. The paper, the derivation notes and the user manual are carried in
+`Paper`, `Notes` and `Manual`, and describe this port as accurately as they do
+the original.
+
+This repository is a port of that plug-in to Delphi. The whole of it — DSP,
+parameters, factory presets and editor — is reimplemented in Object Pascal with
+no dependencies beyond the Delphi RTL, the Win32 API and GDI+, and built as a
+VST 2.4 DLL for Win32 and Win64. The
+[original](https://github.com/jatinchowdhury18/AnalogTapeModel) is C++ on top of
+JUCE.
 
 Like the original, it is licensed under the **GPLv3**.
 
