@@ -15,7 +15,7 @@ uses
 
 const
   ChowTapeUniqueID = $43684D64;  // 'ChMd'
-  ChowTapeVersion  = 1000;       // 1.0.0.0
+  ChowTapeVersion  = 1100;       // 1.1.0.0
   ChowTapeNumIO    = 2;
 
 type
