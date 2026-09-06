@@ -10,6 +10,10 @@ Like the original, it is licensed under the **GPLv3**.
 
 ---
 
+<img width="730" height="601" alt="e268dcec6273ff89f654fe81dbbcfba8" src="https://github.com/user-attachments/assets/f9c086dd-e1b6-4872-b55e-3c67b8089363" />
+
+---
+
 ## Building
 
 Open `ChowTapeModel.dproj` in Delphi (10.4 Sydney or newer; it uses inline
