@@ -208,6 +208,8 @@ type
     FPages: TObjectList<TTapeTabPage>;
     FCurrentPage: Integer;
     FTabHeight: Single;
+    FTabWidths: TArray<Single>;
+    procedure MeasureTabs(G: TGPGraphics);
     function TabRect(Index: Integer): TRectF;
     procedure PaintChrome(G: TGPGraphics);
     function VisiblePage: TTapeTabPage;
@@ -1048,21 +1050,72 @@ begin
   Result := RectF(Bounds.X, Bounds.Y + FTabHeight, Bounds.W, Bounds.H - FTabHeight);
 end;
 
+{ TabbedButtonBar asks the look and feel for each tab's best width and lays
+  them out from that, so a long caption gets a wider tab. Dividing the bar
+  equally instead left "Degrade" filling nine tenths of its cell while "Loss"
+  beside it filled half, which reads as a misplaced divider. }
+procedure TTapeTabbedPanel.MeasureTabs(G: TGPGraphics);
+const
+  { what a tab gets on top of its caption, before everything is scaled to fit }
+  TabPadding = 20.0;
+var
+  I: Integer;
+  Total, FontSize: Single;
+begin
+  SetLength(FTabWidths, FPages.Count);
+  if FPages.Count = 0 then
+    Exit;
+
+  FontSize := (FTabHeight - 4.0) * 0.45;
+  Total := 0.0;
+  for I := 0 to FPages.Count - 1 do
+  begin
+    FTabWidths[I] := MeasureTextWidth(G, FPages[I].Caption, FontSize, True) +
+      TabPadding;
+    Total := Total + FTabWidths[I];
+  end;
+
+  if Total <= 0.0 then
+    Exit;
+
+  { and then stretched to fill the bar exactly, so the last tab ends on the
+    panel's edge }
+  for I := 0 to FPages.Count - 1 do
+    FTabWidths[I] := FTabWidths[I] * Bounds.W / Total;
+end;
+
 function TTapeTabbedPanel.TabRect(Index: Integer): TRectF;
 var
-  W: Single;
+  I: Integer;
+  X, W: Single;
 begin
   if FPages.Count = 0 then
     Exit(RectF(0, 0, 0, 0));
-  W := Bounds.W / FPages.Count;
-  Result := RectF(Bounds.X + Index * W, Bounds.Y, W, FTabHeight);
+
+  { equal shares until the first paint has had a chance to measure }
+  if Length(FTabWidths) <> FPages.Count then
+  begin
+    W := Bounds.W / FPages.Count;
+    Exit(RectF(Bounds.X + Index * W, Bounds.Y, W, FTabHeight));
+  end;
+
+  X := Bounds.X;
+  for I := 0 to Index - 1 do
+    X := X + FTabWidths[I];
+  Result := RectF(X, Bounds.Y, FTabWidths[Index], FTabHeight);
 end;
 
 procedure TTapeTabbedPanel.PaintChrome(G: TGPGraphics);
+const
+  { the front tab's rule stops short of the dividers on either side of it --
+    they are a pixel wide, so two clears them with one to spare }
+  UnderlineInset = 2.0;
 var
   I: Integer;
   R, Shadow: TRectF;
   Colour: Cardinal;
+  BarY: Single;
+  GlowPts: array[0 .. 1] of TGPPointF;
 begin
   if not Visible then
     Exit;
@@ -1070,6 +1123,8 @@ begin
   { the tabbed view is a foleys item like any other: its background is a
     rounded rectangle, and the radius is foleys' default of 5 }
   FillRoundedRect(G, Bounds, PanelRadius, clPanel);
+
+  MeasureTabs(G);
 
   { every tab in gui.xml carries tab-color="", so the gradient MyLNF paints
     behind an unselected tab is drawn in transparent black and the panel shows
@@ -1083,15 +1138,41 @@ begin
   for I := 0 to FPages.Count - 1 do
   begin
     R := TabRect(I);
+
+    { a rule the full height of the bar between neighbours. The tab widths
+      come out of a text measurement, so it is snapped to a whole pixel. }
+    if I > 0 then
+      FillRectC(G, RectF(Round(R.X), R.Y, 1.0, FTabHeight), clTabOutline);
+
     if I = FCurrentPage then
-      Colour := clWhite
+    begin
+      Colour := clWhite;
+      { and the front tab is picked out by an accent rule just above the
+        outline that runs the width of the bar, haloed like everything else
+        the accent is used for. The clip stops at the underside of the rule,
+        so the halo blooms up into the tab and nothing spills onto the line
+        below it or across the dividers to either side. }
+      BarY := Round(R.Y + FTabHeight) - 3.0;
+      GlowPts[0].X := R.X + UnderlineInset;
+      GlowPts[0].Y := BarY;
+      GlowPts[1].X := R.X + R.W - UnderlineInset;
+      GlowPts[1].Y := BarY;
+
+      G.SetClip(MakeRect(R.X, R.Y, R.W, BarY + 1.0 - R.Y));
+      try
+        DrawGlowPolyline(G, PGPPointF(@GlowPts[0]), 2, clAccent, 2.0, 2.5);
+      finally
+        G.ResetClip;
+      end;
+    end
     else
       Colour := $99FFFFFF;   // Colours::white with the 0.6 alpha MyLNF applies
 
-    { MyLNF::createTabTextLayout, on the text area -- the active area less the
-      four pixels LookAndFeel_V2 keeps around a tab image }
-    DrawTextC(G, FPages[I].Caption, RectF(R.X, R.Y + 4.0, R.W, R.H - 4.0),
-      (FTabHeight - 4.0) * 0.45, Colour, True, 1, 1);
+    { MyLNF centres the caption in the active area, which LookAndFeel_V2 takes
+      four pixels off the top of -- that reads as sitting low here, so it is
+      centred in the whole tab instead }
+    DrawTextC(G, FPages[I].Caption, R, (FTabHeight - 4.0) * 0.45,
+      Colour, True, 1, 1);
   end;
 end;
 
@@ -1387,12 +1468,22 @@ end;
 procedure TTapeInfoLine.Paint(G: TGPGraphics);
 var
   I: Integer;
-  X, Right, FontSize, W: Single;
+  X, Right, FontSize, W, Total: Single;
 begin
   if not Visible then
     Exit;
 
-  FontSize := Min(16.0, Bounds.H * 0.8);
+  FontSize := Min(14.0, Bounds.H * 0.7);
+
+  { the line carries the architecture, the version and a byline, which is long
+    enough to run past the title column at the nominal size, so it is measured
+    first and brought down until the whole of it fits }
+  Total := 0.0;
+  for I := 0 to High(FSegments) do
+    Total := Total + MeasureTextWidth(G, FSegments[I].Text, FontSize, False);
+  if (Total > Bounds.W) and (Total > 0.0) then
+    FontSize := JMaxF(6.0, FontSize * Bounds.W / Total);
+
   X := Bounds.X;
   Right := Bounds.Right;
 

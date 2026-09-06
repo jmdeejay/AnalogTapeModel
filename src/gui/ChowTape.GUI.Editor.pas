@@ -166,6 +166,14 @@ uses
   ChowTape.DSP.HysteresisSTN;
 
 const
+  { the DLL says which build it is, the way the original's info line names the
+    architecture it was compiled for }
+{$IFDEF WIN64}
+  ArchLabel = '64 bits';
+{$ELSE}
+  ArchLabel = '32 bits';
+{$ENDIF}
+
   EditorClassName = 'ChowTapeModelEditorWnd';
   TimerId = 1;
   TimerIntervalMs = 33;
@@ -595,11 +603,11 @@ begin
   FPanels.Clear;
 
   // --- header -------------------------------------------------------------
-  AddTop(TTapeTitle.Create(Self, 'Chow Tape Model', '', 35.0));
+  AddTop(TTapeTitle.Create(Self, 'Chow Tape Model', '', 40.0));
   { InfoComp's scheme: the line runs in the accent colour with the version
     number picked out in white }
   Info := TTapeInfoLine.Create(Self);
-  Info.Add('Delphi VST 2.4 port  |  ', clAccent);
+  Info.Add('Delphi VST 2.4 port ' + ArchLabel + '  |  ', clAccent);
   Info.Add('v1.0.0', clWhite);
   Info.Add('  |  by JM-DG', clAccent);
   AddTop(Info);
