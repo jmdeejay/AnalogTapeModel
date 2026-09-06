@@ -608,7 +608,7 @@ begin
     number picked out in white }
   Info := TTapeInfoLine.Create(Self);
   Info.Add('Delphi VST 2.4 port ' + ArchLabel + '  |  ', clAccent);
-  Info.Add('v1.0.0', clWhite);
+  Info.Add('v1.1.0', clWhite);
   Info.Add('  |  by JM-DG', clAccent);
   AddTop(Info);
   AddTop(TTapeScopeView.Create(Self, FProcessor.Scope));
@@ -986,7 +986,8 @@ var
   SpeedRow: TArray<TRectF>;
   DegradeTop: TArray<TRectF>;
   PresetRow: TArray<TRectF>;
-  M, Pad, TabBtn, Nudge: Single;
+  M, Pad, TabBtn, Nudge, DepthMax, PowerH: Single;
+  DegradeBox: TRectF;
 begin
   if FControls.Count = 0 then
     Exit;
@@ -999,9 +1000,7 @@ begin
   { the preset block sits a little left of where the bar's proportions put it,
     to open the gap between it and the cog }
   Nudge := 4 * FScale;
-  { the power buttons are min-height="20" max-height="30" in gui.xml and land
-    on the maximum there; pinning them to it keeps the glyph the size it was
-    drawn for instead of letting the flex starve it down to the minimum }
+  { the power buttons: see PowerH below }
 
   { the root view takes the default margin too: the red card is inset from the
     window on every side and the host's background shows in the gap }
@@ -1035,6 +1034,16 @@ begin
     FPanels[I].TabHeight := 40 * FScale;
   end;
 
+  { gui.xml puts the power buttons between 20 and 30 high, and at the design
+    size the flex would starve them to the 20. Pinning them to the 30 instead
+    fixed the size but froze it, so they shrank against everything else as the
+    window grew. They follow the panel now -- the fraction is the one that
+    reproduces that 30 at the design size -- between bounds that stop them
+    disappearing on a small window or turning into dinner plates on a huge
+    one. All four panels are the same height, so one value does for all. }
+  PowerH := EnsureRange(FPanels[0].ContentArea.H * 0.083,
+    24 * FScale, 48 * FScale);
+
   // panel 1
   Panel := FPanels[0];
   Content := Panel.ContentArea;
@@ -1054,7 +1063,7 @@ begin
   Page := Panel.Pages[1]; // Filters -- margin="0" on the tab, but the two cut
                           // sliders take both defaults, so they inset by ten
   Cells := Flex(Content, True, [FC(1.0), FC(1.0), FC(0.35, 0, TabBtn),
-    FC(0.1, 30 * FScale, 30 * FScale)]);
+    FC(0.1, PowerH, PowerH)]);
   Page.Controls[0].Bounds := Cells[0].Reduced(M + Pad);
   Page.Controls[1].Bounds := Cells[1].Reduced(M + Pad);
   Page.Controls[2].Bounds := Cells[2];   // makeup: margin="0", padding drawn in
@@ -1074,7 +1083,7 @@ begin
   begin
     Page := Panel.Pages[Idx];
     Cells := Flex(Content, True, [FC(0.05), FC(1.0), FC(1.0), FC(1.0),
-      FC(0.1, 30 * FScale, 30 * FScale)]);
+      FC(0.1, PowerH, PowerH)]);
     for I := 0 to 3 do
       Page.Controls[I].Bounds := Cells[I + 1];
   end;
@@ -1085,7 +1094,7 @@ begin
 
   Page := Panel.Pages[0]; // Loss
   Cells := Flex(Content, True, [FC(1.0), FC(1.0), FC(1.0), FC(1.0), FC(1.0),
-    FC(0.53), FC(0.01), FC(0.1, 30 * FScale, 30 * FScale)]);
+    FC(0.53), FC(0.01), FC(0.1, PowerH, PowerH)]);
   { the five loss sliders only set padding="0", so each keeps its margin: that
     is what puts air between one slider's value read-out and the next one's
     caption instead of stacking them straight on top of each other. The tracks
@@ -1102,11 +1111,18 @@ begin
   Page := Panel.Pages[1]; // Degrade
   Cells := Flex(Content, True, [FC(2.0, 0, 140 * FScale), FC(0.05, 0, 15 * FScale),
     FC(1.0), FC(0.05, 0, 15 * FScale), FC(1.0), FC(0.05, 0, 15 * FScale), FC(1.0),
-    FC(0.1, 0, 15 * FScale), FC(0.1, 30 * FScale, 30 * FScale)]);
-  // Depth is capped at 70 high in the original; without that it eats the space
-  // its 0.1x button needs and ends up twice the height of the sliders below it.
-  DegradeTop := Flex(Cells[0].Reduced(M), True,
-    [FC(0.05, 0, 5 * FScale), FC(2.5, 0, 70 * FScale), FC(0.35, 0, TabBtn)]);
+    FC(0.1, 0, 15 * FScale), FC(0.1, PowerH, PowerH)]);
+  { Depth is capped at 70 high in the original; without that it eats the space
+    its 0.1x button needs and ends up twice the height of the sliders below it.
+    That cap is absolute, though, so on a window shorter than the design size
+    it stops being a cap and becomes a floor -- Depth keeps its 70 while the
+    group around it shrinks, and the button is left with single digits. It
+    yields once there is less than thirty pixels left for the rest. }
+  DegradeBox := Cells[0].Reduced(M);
+  DepthMax := JMinF(70 * FScale,
+    JMaxF(20 * FScale, DegradeBox.H - 30 * FScale));
+  DegradeTop := Flex(DegradeBox, True,
+    [FC(0.05, 0, 5 * FScale), FC(2.5, 0, DepthMax), FC(0.35, 0, TabBtn)]);
   Page.Controls[0].Bounds := Cells[0].Reduced(M);  // group background
   { gui.xml gives the depth slider margin="0" padding="", so its track runs
     edge to edge of the dark group box. Inset it by the five pixels the 0.1x
@@ -1122,7 +1138,7 @@ begin
 
   Page := Panel.Pages[2]; // Chew
   Cells := Flex(Content, True, [FC(0.05), FC(1.0), FC(1.0), FC(1.0),
-    FC(0.1, 30 * FScale, 30 * FScale)]);
+    FC(0.1, PowerH, PowerH)]);
   for I := 0 to 3 do
     Page.Controls[I].Bounds := Cells[I + 1];
 
@@ -1137,14 +1153,21 @@ begin
     line up on the same baseline. }
   Page := Panel.Pages[0]; // Flutter
   Cells := Flex(Content.Reduced(3 * FScale, 0), True, [FC(0.25, 46 * FScale, 65 * FScale),
-    FC(0.1, 0, 15 * FScale), FC(1.0, 0, 150 * FScale), FC(1.0, 0, 150 * FScale),
+    FC(0.1, 0, 15 * FScale),
+    { gui.xml caps every wow and flutter control at 150. That works on the wow
+      tab, where four sliders between them hold 600 before the plot starts
+      taking the slack, but the flutter tab has only two -- so on a tall window
+      they stop at 300 and the plot swallows the rest, ending up twice the size
+      of the wow tab's. Two knobs are allowed to hold what four sliders do. }
+    FC(1.0, 0, 300 * FScale), FC(1.0, 0, 300 * FScale),
     { 0.8 in gui.xml, trimmed so the plot comes out the same height as the wow
       tab's rather than four pixels taller }
-    FC(0.74), FC(0.1, 30 * FScale, 30 * FScale)]);
-  { the sync menu sits hard against the top and the sides of the tab without
-    this: gui.xml gives it no margin of its own and relies on the tab's, which
-    is gone here so that the power buttons line up across the four sections }
-  Page.Controls[0].Bounds := Cells[0].Reduced(7 * FScale, 5 * FScale);
+    FC(0.74), FC(0.1, PowerH, PowerH)]);
+  { gui.xml gives the sync menu no margin of its own and leans on the tab's,
+    which is gone here so that the power buttons line up across the four
+    sections. It takes the same inset as the plot at the bottom of the tab
+    instead, so the two line up down the edge of the panel. }
+  Page.Controls[0].Bounds := Cells[0].Reduced(M, 5 * FScale);
   Page.Controls[1].Bounds := Cells[2];
   Page.Controls[2].Bounds := Cells[3];
   Page.Controls[3].Bounds := Cells[4].Reduced(M);   // the plot keeps its margin
@@ -1154,11 +1177,12 @@ begin
   Cells := Flex(Content.Reduced(3 * FScale, 0), True, [FC(0.35, 46 * FScale, 65 * FScale),
     FC(0.1), FC(1.0, 0, 150 * FScale), FC(1.0, 0, 150 * FScale),
     FC(1.0, 0, 150 * FScale), FC(1.0, 0, 150 * FScale), FC(1.45),
-    FC(0.1, 30 * FScale, 30 * FScale)]);
-  { the sync menu sits hard against the top and the sides of the tab without
-    this: gui.xml gives it no margin of its own and relies on the tab's, which
-    is gone here so that the power buttons line up across the four sections }
-  Page.Controls[0].Bounds := Cells[0].Reduced(7 * FScale, 5 * FScale);
+    FC(0.1, PowerH, PowerH)]);
+  { gui.xml gives the sync menu no margin of its own and leans on the tab's,
+    which is gone here so that the power buttons line up across the four
+    sections. It takes the same inset as the plot at the bottom of the tab
+    instead, so the two line up down the edge of the panel. }
+  Page.Controls[0].Bounds := Cells[0].Reduced(M, 5 * FScale);
   { the wow tab is inset three, so seven more puts these tracks the same ten
     pixels in from the panel edge as the loss and degrade ones }
   for I := 1 to 4 do

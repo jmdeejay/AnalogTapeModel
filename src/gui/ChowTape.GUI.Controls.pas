@@ -902,6 +902,12 @@ begin
       cannot disagree by the half pixel the flex layout leaves behind. }
     NameBox := SnapForStroke(R.Reduced(1.0));
     StrokeRoundedRect(G, NameBox, 5.0, 1.0, clSliderBack);
+    { WowFlutterMenuLNF sizes the name at 0.48 of the height, which on a box
+      this wide leaves the label all but touching the sides; a little under
+      that, with ten pixels kept clear at each end, sits better. The width is
+      what runs out first when the panel narrows, so it is fitted to that. }
+    FontSize := FitFontSize(G, FDisplayText, Min(28.0, R.H * 0.40),
+      NameBox.W - 20.0, True);
     DrawTextC(G, FDisplayText, NameBox, FontSize, clWhite, True, 1, 1);
     Exit;
   end;
@@ -969,9 +975,11 @@ begin
       else
         Menu.AddItem(FItems[I], I + 1, I = Selected);
 
-    Pt.X := Round(Bounds.X);
-    Pt.Y := Round(Bounds.Bottom);
-    Winapi.Windows.ClientToScreen(FHost.HostWindow, Pt);
+    { at the pointer, as the sync, oversampling, preset and settings menus all
+      are. Anchoring to the box's own left edge is the usual thing for a combo,
+      but these stretch with the window, and on a wide one the menu came up a
+      long way from the click that opened it. }
+    GetCursorPos(Pt);
 
     Cmd := Menu.Popup(FHost.HostWindow, Pt.X, Pt.Y);
 
@@ -1434,17 +1442,23 @@ end;
 procedure TTapeTitle.Paint(G: TGPGraphics);
 var
   R: TRectF;
-  W: Single;
+  W, Size: Single;
 begin
   if not Visible then
     Exit;
 
   R := Bounds;
-  W := MeasureTextWidth(G, FTitle + ' ', FFontSize, True);
-  DrawTextC(G, FTitle + ' ', RectF(R.X, R.Y, W, R.H), FFontSize, clWhite, True, 0, 1);
+
+  { the title column narrows with the window while the point size does not, so
+    the size comes down until the whole title fits rather than running on over
+    the scope beside it }
+  Size := FitFontSize(G, FTitle + ' ' + FSubtitle, FFontSize, R.W, True);
+
+  W := MeasureTextWidth(G, FTitle + ' ', Size, True);
+  DrawTextC(G, FTitle + ' ', RectF(R.X, R.Y, W, R.H), Size, clWhite, True, 0, 1);
 
   if FSubtitle <> '' then
-    DrawTextC(G, FSubtitle, RectF(R.X + W, R.Y, R.W - W, R.H), FFontSize,
+    DrawTextC(G, FSubtitle, RectF(R.X + W, R.Y, R.W - W, R.H), Size,
       $FF808080, True, 0, 1);
 end;
 
