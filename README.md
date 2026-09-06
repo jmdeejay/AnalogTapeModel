@@ -22,7 +22,7 @@ Like the original, it is licensed under the **GPLv3**.
 
 ---
 
-<img width="730" height="601" alt="e268dcec6273ff89f654fe81dbbcfba8" src="https://github.com/user-attachments/assets/f9c086dd-e1b6-4872-b55e-3c67b8089363" />
+<img width="727" height="598" alt="7155be2c70a00a18557ee7d65a7bd98e" src="https://github.com/user-attachments/assets/3c8446fb-f32c-4335-a540-0b1bf3a94ce4" />
 
 ---
 
