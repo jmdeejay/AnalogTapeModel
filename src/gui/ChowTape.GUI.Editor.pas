@@ -621,9 +621,6 @@ begin
   Page := Panel.AddPage('Gain');
   AddSlider(Page, pidInGain, 'Input Gain',
     'Sets the input gain to the tape model in Decibels.', ssRotary);
-  { gui.xml singles this one out with a brighter teal, slider-track="FF0BBDC2".
-    That only made sense while the other knobs were cyan; against the accent
-    the lone teal knob is the odd one out, so it goes with the rest. }
   AddSlider(Page, pidDryWet, 'Dry/Wet',
     'Sets dry/wet mix of the entire plugin.', ssRotary);
   AddSlider(Page, pidOutGain, 'Output Gain',
@@ -723,8 +720,6 @@ begin
   AddPower(Page, pidLossOnOff, 'Loss On/Off', 'Turns the loss filters on or off.');
 
   Page := Panel.AddPage('Degrade');
-  // drawn first so it sits behind: the original groups Depth and its 0.1x
-  // button on a darker panel
   Page.Controls.Add(TTapeFilledPanel.Create(Self, clPanelDark));
   AddSlider(Page, pidDegDepth, 'Depth', 'Sets the depth of the tape degradation.',
     ssLinearHorizontal);
@@ -809,9 +804,6 @@ begin
   AddTop(FTooltipBar);
 
   // --- bottom bar ---------------------------------------------------------
-  { the strip behind the oversampling, mode, mix-group and preset controls.
-    gui.xml gives it margin="0", so unlike everything else it runs the full
-    width of the root and sits flush with its bottom edge. }
   FBarBackground := TTapeFilledPanel.Create(Self, clPanel, 0.0);
   AddTop(FBarBackground);
 
