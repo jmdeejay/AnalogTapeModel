@@ -182,6 +182,9 @@ var
   GClassRegistered: Boolean = False;
   GGdiplusToken: ULONG_PTR = 0;
   GEditorCount: Integer = 0;
+  { Every editor this DLL has built, so a new one can find a stale sibling
+    sitting in the parent it is about to open into. }
+  GEditors: TList<TTapeEditor> = nil;
 
 { ---------------------------------------------------------------------------
   A small flex layout, enough to reproduce the original's arrangement.
@@ -347,6 +350,7 @@ begin
   FScale := 1.0;
   FControls := TControlList.Create(True);
   FPanels := TList<TTapeTabbedPanel>.Create;
+  GEditors.Add(Self);
 end;
 
 destructor TTapeEditor.Destroy;
@@ -354,6 +358,8 @@ begin
   Close;
   FPanels.Free;
   FControls.Free;
+  if GEditors <> nil then
+    GEditors.Remove(Self);
   inherited Destroy;
 end;
 
@@ -432,6 +438,9 @@ begin
 end;
 
 function TTapeEditor.Open(AParent: HWND): Boolean;
+var
+  I: Integer;
+  Other: TTapeEditor;
 begin
   { normally a no-op on a fresh editor, but an editor whose close was deferred
     past a menu could still be holding its controls }
@@ -442,6 +451,19 @@ begin
   InitTapeFonts;
   RegisterEditorClass;
   LoadSettings;
+
+  { A host that reloads the plug-in -- a player swapping tracks, say -- can
+    open the new instance's editor before it closes the old one. Both windows
+    then sit in the same parent, each repainting on its own timer, and the UI
+    looks like it is flipping between two states even though no parameter has
+    moved. Anything still parented where we are about to open is stale, so
+    take its window away; its owner can free the object whenever it likes. }
+  for I := 0 to GEditors.Count - 1 do
+  begin
+    Other := GEditors[I];
+    if (Other <> Self) and (Other.FHwnd <> 0) and (Other.FParentHwnd = AParent) then
+      Other.BeginClose;
+  end;
 
   FParentHwnd := AParent;
   FHwnd := CreateWindowEx(0, EditorClassName, '',
@@ -1673,7 +1695,18 @@ begin
 
     WM_CAPTURECHANGED:
       begin
-        FCaptured := nil;
+        { Capture can be taken away without a WM_LBUTTONUP ever arriving -- a
+          menu's modal loop, a host window, Alt+Tab. The control has to be told
+          the drag is over, or it sits there with FDragging still set and, worse,
+          with an unbalanced beginEdit: the host then stays in automation-write
+          on that parameter and fights whatever the user does next. }
+        if FCaptured <> nil then
+        begin
+          C := FCaptured;
+          FCaptured := nil;
+          C.MouseUp(0, 0);
+          RequestRepaint;
+        end;
         Exit;
       end;
 
@@ -2193,9 +2226,11 @@ begin
 end;
 
 initialization
+  GEditors := TList<TTapeEditor>.Create;
 
 finalization
   StopGdiPlus;
   DoneTapeFonts;
+  FreeAndNil(GEditors);
 
 end.
